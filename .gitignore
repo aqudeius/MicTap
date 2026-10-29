@@ -1,0 +1,43 @@
+# .NET build and publish output
+[Bb]in/
+[Oo]bj/
+publish/
+artifacts/
+packages/
+*.exe
+*.dll
+*.pdb
+
+# Local IDE state
+.vs/
+*.user
+*.suo
+*.rsuser
+
+# Local app settings and recordings
+settings.json
+settings.json.tmp
+self-test.txt
+recordings/
+*.wav
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Credentials and signing keys
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+
+# Native build artifacts
+[Dd]ebug/
+[Rr]elease/
+*.obj
+*.tlog
+*.sys
+*.cat
+*.cab
