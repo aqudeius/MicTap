@@ -1,0 +1,43 @@
+<Project>
+  <!-- Keep the normal build flat. Only portable Windows publishes need a relocated app host. -->
+  <Target Name="ArrangeMicTapPortablePublish" AfterTargets="ComputeFilesToPublish"
+          Condition="'$(SelfContained)' == 'true' and '$(UseAppHost)' == 'true' and
+                     '$(PublishSingleFile)' != 'true' and '$(PublishAot)' != 'true' and
+                     $(RuntimeIdentifier.StartsWith('win-'))">
+    <PropertyGroup>
+      <_MicTapPortableHost>$(IntermediateOutputPath)MicTap.portable.exe</_MicTapPortableHost>
+    </PropertyGroup>
+
+    <CreateAppHost AppHostSourcePath="$(AppHostSourcePath)"
+                   AppHostDestinationPath="$(_MicTapPortableHost)"
+                   AppBinaryName="System/DLLs/$(AssemblyName)$(TargetExt)"
+                   IntermediateAssembly="@(IntermediateAssembly->'%(FullPath)')"
+                   WindowsGraphicalUserInterface="true"
+                   Retries="$(CopyRetryCount)"
+                   RetryDelayMilliseconds="$(CopyRetryDelayMilliseconds)" />
+
+    <ItemGroup>
+      <_MicTapPayload Include="@(ResolvedFileToPublish)"
+                      Condition="'%(ResolvedFileToPublish.RelativePath)' != '$(AssemblyName).exe'" />
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" />
+      <ResolvedFileToPublish Include="$(_MicTapPortableHost)" RelativePath="$(AssemblyName).exe" CopyToPublishDirectory="Always" />
+      <ResolvedFileToPublish Include="$(MSBuildProjectDirectory)/../../README.md" RelativePath="README.md" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="@(_MicTapPayload)">
+        <RelativePath>System/DLLs/%(_MicTapPayload.RelativePath)</RelativePath>
+        <RelativePath Condition="'%(_MicTapPayload.Extension)' == '.dll' and $([System.String]::Copy('%(_MicTapPayload.Filename)').EndsWith('.resources'))">System/Localizations/%(_MicTapPayload.RelativePath)</RelativePath>
+        <RelativePath Condition="'%(_MicTapPayload.RelativePath)' == 'LICENSE' or '%(_MicTapPayload.RelativePath)' == 'THIRD_PARTY_NOTICES.md' or
+                                 $([System.String]::Copy('%(_MicTapPayload.RelativePath)').StartsWith('licenses'))">System/Notices/%(_MicTapPayload.RelativePath)</RelativePath>
+      </ResolvedFileToPublish>
+
+      <_MicTapRuntimeNotices Include="%(ResolvedRuntimePack.PackageDirectory)/LICENSE*;%(ResolvedRuntimePack.PackageDirectory)/THIRD-PARTY-NOTICES*"
+                             Condition="'%(ResolvedRuntimePack.PackageDirectory)' != '' and
+                                        ('%(ResolvedRuntimePack.Identity)' == 'Microsoft.NETCore.App.Runtime.$(RuntimeIdentifier)' or
+                                         '%(ResolvedRuntimePack.Identity)' == 'Microsoft.WindowsDesktop.App.Runtime.$(RuntimeIdentifier)')">
+        <PackName>%(ResolvedRuntimePack.Identity)</PackName>
+      </_MicTapRuntimeNotices>
+      <ResolvedFileToPublish Include="@(_MicTapRuntimeNotices)" CopyToPublishDirectory="PreserveNewest">
+        <RelativePath>System/Notices/licenses/%(_MicTapRuntimeNotices.PackName)/%(_MicTapRuntimeNotices.Filename)%(_MicTapRuntimeNotices.Extension)</RelativePath>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+</Project>

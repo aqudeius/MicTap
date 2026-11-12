@@ -21,4 +21,6 @@ Their package metadata identifies Microsoft Corporation. Their supplied license 
 
 Dependencies are restored through NuGet. Their source and compiled binaries are not vendored in this repository. The project copies MicTap's license, these notices, and the retained dependency licenses into build and publish output; retain them when distributing the application.
 
+The portable Windows build bundles the .NET and .NET Desktop runtimes. Their licenses and notices are in the `licenses` folder beside this file, under the corresponding runtime package names.
+
 Third-party virtual audio cable drivers are installed separately by users. They are not included in MicTap and remain subject to their respective licenses. The shelved custom-driver project is not part of this repository.

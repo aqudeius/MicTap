@@ -18,4 +18,5 @@
     <None Include="../../licenses/dotnet-LICENSE.txt" Link="licenses/dotnet-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="../../licenses/dotnet-THIRD-PARTY-NOTICES.txt" Link="licenses/dotnet-THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Import Project="PortablePublish.targets" />
 </Project>

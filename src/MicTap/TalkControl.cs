@@ -4,7 +4,7 @@ namespace MicTap;
 enum TalkMode { Open, Toggle, PushToTalk }
 // Retained only to import settings from older versions, including the unused driver flag.
 sealed record TalkSettings(TalkMode Mode = TalkMode.Open, int Binding = (int)(Keys.Control | Keys.Shift | Keys.F8), bool PassThrough = true, bool GateMonitors = false, bool VirtualMicEnabled = false);
-sealed record ChannelTalkSettings(bool Enabled = false, TalkMode Mode = TalkMode.Open, int Binding = (int)(Keys.Control | Keys.Shift | Keys.F8), bool PassThrough = true);
+sealed record ChannelTalkSettings(bool Enabled = false, TalkMode Mode = TalkMode.Open, int Binding = (int)(Keys.Control | Keys.Shift | Keys.F8), bool PassThrough = true, bool BeepOnChange = false);
 
 sealed class TalkGate
 {
@@ -13,19 +13,29 @@ sealed class TalkGate
     public volatile bool Active;
     public bool IsOpen => Active && Volatile.Read(ref open) != 0;
     public TalkMode Mode { get; private set; }
+    public event Action<bool>? KeyedStateChanged;
     bool held;
     public void Configure(TalkMode mode) { lock (sync) { Mode = mode; held = false; Volatile.Write(ref open, mode == TalkMode.Open ? 1 : 0); } }
     public void SetHeld(bool down)
     {
         lock (sync)
         {
-            if (Mode == TalkMode.PushToTalk) Volatile.Write(ref open, down ? 1 : 0);
-            else if (Mode == TalkMode.Toggle && down && !held) Volatile.Write(ref open, Volatile.Read(ref open) == 0 ? 1 : 0);
+            if (Mode == TalkMode.PushToTalk) SetKeyedState(down);
+            else if (Mode == TalkMode.Toggle && down && !held) SetKeyedState(open == 0);
             held = down;
         }
     }
-    public void Toggle() { lock (sync) if (Mode == TalkMode.Toggle) Volatile.Write(ref open, Volatile.Read(ref open) == 0 ? 1 : 0); }
+    public void Toggle() { lock (sync) if (Mode == TalkMode.Toggle) SetKeyedState(open == 0); }
     public void Reset() { lock (sync) { held = false; Volatile.Write(ref open, Mode == TalkMode.Open ? 1 : 0); } }
+
+    // Configure and Reset are silent. Subscribers must only enqueue feedback here.
+    void SetKeyedState(bool isOpen)
+    {
+        int next = isOpen ? 1 : 0;
+        if (open == next) return;
+        Volatile.Write(ref open, next);
+        if (Active) KeyedStateChanged?.Invoke(isOpen);
+    }
 }
 
 static class GlobalTalkKey

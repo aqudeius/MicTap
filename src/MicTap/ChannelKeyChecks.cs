@@ -10,8 +10,48 @@ static class ChannelKeyChecks
         public int Read(float[] buffer, int offset, int count) { Array.Fill(buffer, 1f, offset, count); return count; }
     }
     static void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
+
+    static void CheckTalkCues()
+    {
+        var cues = new List<bool>();
+        using var row = new OutputRow([], cues.Add);
+        Require(!row.GateBeeps.Checked && !row.GateBeeps.Enabled, "Talk cues should start off");
+
+        row.TalkEnabled.Checked = true;
+        row.TalkModeBox.SelectedIndex = (int)TalkMode.Toggle;
+        row.ConfigureTalk();
+        row.TalkGate.Active = true;
+        row.KeyChanged(true);
+        row.KeyChanged(false);
+        Require(row.GateBeeps.Enabled && row.TalkGate.IsOpen && cues.Count == 0, "Opt-in talk cues changed toggle behavior");
+
+        row.GateBeeps.Checked = true;
+        Require(row.TalkGate.IsOpen && cues.Count == 0, "Enabling cues changed the current talk state");
+        row.TalkGate.Toggle(); // The on-screen Toggle talk button uses this path.
+        row.KeyChanged(true);
+        row.KeyChanged(true);
+        row.KeyChanged(false);
+        row.TalkGate.Reset();
+        Require(cues.SequenceEqual([false, true]), "Toggle cues should follow state changes without repeats or reset sounds");
+
+        row.TalkModeBox.SelectedIndex = (int)TalkMode.PushToTalk;
+        row.ConfigureTalk();
+        var router = new ChannelKeyRouter();
+        router.Configure([new(row.ChannelId, Keys.F8, true, row.KeyChanged)]);
+        router.Handle((int)Keys.F8, true);
+        router.Handle((int)Keys.F8, true);
+        router.Handle((int)Keys.F8, false);
+        router.Handle((int)Keys.F8, true);
+        router.CheckRelease(_ => false);
+        row.TalkGate.Active = false;
+        row.KeyChanged(true);
+        row.KeyChanged(false);
+        Require(cues.SequenceEqual([false, true, true, false, true, false]), "PTT cues should follow press and release only while active");
+    }
+
     public static void Run()
     {
+        CheckTalkCues();
         var a = new TalkGate { Active = true }; a.Configure(TalkMode.Toggle);
         var b = new TalkGate { Active = true }; b.Configure(TalkMode.PushToTalk);
         var open = new TalkGate { Active = true }; open.Configure(TalkMode.Open);

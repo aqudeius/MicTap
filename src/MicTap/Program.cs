@@ -9,6 +9,7 @@ static class Program
 {
     [STAThread] static void Main(string[] args)
     {
+        PortableLayout.RegisterLocalizations();
         if (args.Contains("--self-test")) { Checks.Run(); return; }
         ApplicationConfiguration.Initialize();
         Application.Run(new MonitorForm());
@@ -24,6 +25,7 @@ sealed class DelayLine : ISampleProvider
     public volatile int Milliseconds;
     public volatile float Gain = .5f;
     public volatile bool Muted;
+    public volatile bool MonoMix;
     public Func<bool>? Gate;
     public WaveFormat WaveFormat => source.WaveFormat;
     public DelayLine(ISampleProvider source)
@@ -34,13 +36,24 @@ sealed class DelayLine : ISampleProvider
     public int Read(float[] buffer, int offset, int count)
     {
         int read = source.Read(buffer, offset, count);
-        int delay = (int)((long)WaveFormat.SampleRate * Math.Clamp(Milliseconds, 0, 5000) / 1000) * WaveFormat.Channels;
+        int channels = WaveFormat.Channels;
+        int delay = (int)((long)WaveFormat.SampleRate * Math.Clamp(Milliseconds, 0, 5000) / 1000) * channels;
         float gain = Muted || Gate?.Invoke() == false ? 0 : Gain;
         for (int i = offset; i < offset + read; i++)
         {
             ring[cursor] = buffer[i];
             buffer[i] = ring[(cursor - delay + ring.Length) % ring.Length] * gain;
             cursor = (cursor + 1) % ring.Length;
+        }
+        if (MonoMix && channels > 1)
+        {
+            for (int i = offset; i <= offset + read - channels; i += channels)
+            {
+                var frame = buffer.AsSpan(i, channels);
+                float sum = 0;
+                foreach (float sample in frame) sum += sample;
+                frame.Fill(sum / channels);
+            }
         }
         return read;
     }
@@ -62,7 +75,10 @@ sealed class Route : IDisposable
         player = new WasapiOut(device, AudioClientShareMode.Shared, true, latency);
         try
         {
-            player.Init(new SampleToWaveProvider(Delay));
+            ISampleProvider playback = Delay;
+            if (format.Channels == 1 && player.OutputWaveFormat.Channels == 2)
+                playback = new MonoToStereoSampleProvider(playback);
+            player.Init(new SampleToWaveProvider(playback));
             player.PlaybackStopped += (_, e) => { if (e.Exception != null && !disposed) failed(e.Exception); };
         }
         catch { player.Dispose(); device.Dispose(); throw; }
@@ -92,15 +108,32 @@ sealed class Route : IDisposable
 
 record DeviceChoice(string Id, string Name, bool Available = true) { public override string ToString() => Available ? Name : Name + " (disconnected)"; }
 
-sealed record OutputSettings(DeviceChoice? Device, int Volume = 50, int Delay = 0, bool Muted = false, ChannelTalkSettings? Talk = null);
+sealed record OutputSettings(DeviceChoice? Device, int Volume = 50, int Delay = 0, bool Muted = false, ChannelTalkSettings? Talk = null, bool MonoMix = false);
 sealed record AppSettings(DeviceChoice? Input, int BufferIndex, OutputSettings[] Outputs, TalkSettings? Talk = null);
 static class SettingsStore
 {
     public static ChannelTalkSettings ChannelTalk(OutputSettings output, TalkSettings? legacy) => output.Talk
         ?? (legacy?.GateMonitors == true ? new ChannelTalkSettings(true, legacy.Mode, legacy.Binding, legacy.PassThrough) : new ChannelTalkSettings());
-    public static readonly string PathName = Path.Combine(AppContext.BaseDirectory, "settings.json");
+    public static readonly string PathName = Path.Combine(PortableLayout.DataDirectory, "settings.json");
     public static AppSettings? Load(string path) => File.Exists(path)
         ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path)) : null;
+    public static AppSettings? LoadCurrent()
+    {
+        if (File.Exists(PathName) || PortableLayout.SystemDirectory is not { } system) return Load(PathName);
+
+        string previousPath = Path.Combine(system, "..", "settings.json");
+        AppSettings? settings = Load(previousPath);
+        if (settings == null) return null;
+
+        // Load first so an unreadable file stays in place for recovery.
+        try { File.Move(previousPath, PathName); }
+        catch (IOException) when (File.Exists(PathName)) { return Load(PathName); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        return settings;
+    }
     public static void Save(string path, AppSettings settings)
     {
         string temporary = path + ".tmp";
@@ -128,19 +161,25 @@ sealed class OutputRow : Panel
     public readonly ComboBox TalkModeBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     public readonly Button BindKey = new() { Width = 200, Height = 30 };
     public readonly CheckBox PassKey = new() { Text = "Pass key to other apps", Checked = true, AutoSize = true };
+    public readonly CheckBox GateBeeps = new() { Text = "On/off beeps", AutoSize = true };
+    public readonly CheckBox MonoMix = new() { Text = "Mono mix", AutoSize = true, AccessibleDescription = "Play the same mix in both ears." };
     public readonly Button ToggleTalk = new() { Text = "Toggle talk", Width = 130, Height = 30 };
     public readonly TalkGate TalkGate = new();
     public readonly Guid ChannelId = Guid.NewGuid();
     public Keys Binding = Keys.Control | Keys.Shift | Keys.F8;
     public readonly Action<bool> KeyChanged;
-    volatile bool talkEnabled;
+    volatile bool talkEnabled, gateBeepsEnabled;
     readonly Label talkState = new() { AutoSize = true };
     readonly Label percent = new() { Text = "50%", Width = 48 };
     public Route? Active;
-    public OutputRow(DeviceChoice[] devices)
+    public OutputRow(DeviceChoice[] devices, Action<bool> playTalkCue)
     {
         Height = 166; Width = 825; BackColor = Color.FromArgb(242, 245, 249); Margin = new Padding(0, 0, 0, 12);
         KeyChanged = TalkGate.SetHeld;
+        TalkGate.KeyedStateChanged += isOpen =>
+        {
+            if (talkEnabled && gateBeepsEnabled) playTalkCue(isOpen);
+        };
         Controls.Add(new Label { Text = "OUTPUT DEVICE", Location = new Point(16, 12), AutoSize = true, ForeColor = Color.DimGray });
         Device.Location = new Point(16, 36); Device.Items.AddRange(devices); if (devices.Length > 0) Device.SelectedIndex = 0; Controls.Add(Device);
         Controls.Add(new Label { Text = "Added delay (ms)", Location = new Point(400, 12), AutoSize = true });
@@ -153,21 +192,25 @@ sealed class OutputRow : Panel
         TalkModeBox.Location = new Point(155, 79); Controls.Add(TalkModeBox);
         BindKey.Location = new Point(330, 77); Controls.Add(BindKey);
         PassKey.Location = new Point(548, 83); Controls.Add(PassKey);
+        GateBeeps.Location = new Point(16, 106); Controls.Add(GateBeeps);
+        MonoMix.Location = new Point(155, 106); Controls.Add(MonoMix);
+        GateBeeps.CheckedChanged += (_, _) => gateBeepsEnabled = GateBeeps.Checked;
         talkState.Location = new Point(16, 132); Controls.Add(talkState);
         ToggleTalk.Location = new Point(565, 122); Controls.Add(ToggleTalk);
         Remove.Location = new Point(720, 122); Controls.Add(Remove);
         Delay.ValueChanged += (_, _) => UpdateRoute(); Volume.ValueChanged += (_, _) => UpdateRoute(); Mute.CheckedChanged += (_, _) => UpdateRoute();
+        MonoMix.CheckedChanged += (_, _) => UpdateRoute();
         ToggleTalk.Click += (_, _) => { TalkGate.Toggle(); UpdateTalkState(); };
         ConfigureTalk();
     }
     public bool IsAudible => !talkEnabled || TalkGate.IsOpen;
-    public ChannelTalkSettings ReadTalk() => new(TalkEnabled.Checked, (TalkMode)TalkModeBox.SelectedIndex, (int)Binding, PassKey.Checked);
+    public ChannelTalkSettings ReadTalk() => new(TalkEnabled.Checked, (TalkMode)TalkModeBox.SelectedIndex, (int)Binding, PassKey.Checked, GateBeeps.Checked);
     public void ConfigureTalk()
     {
         talkEnabled = TalkEnabled.Checked;
         TalkGate.Configure((TalkMode)TalkModeBox.SelectedIndex);
         TalkModeBox.Enabled = talkEnabled;
-        BindKey.Enabled = PassKey.Enabled = talkEnabled && TalkModeBox.SelectedIndex != 0;
+        BindKey.Enabled = PassKey.Enabled = GateBeeps.Enabled = talkEnabled && TalkModeBox.SelectedIndex != 0;
         BindKey.Text = GlobalTalkKey.Display(Binding) + " · assign…";
         UpdateTalkState();
     }
@@ -183,6 +226,7 @@ sealed class OutputRow : Panel
         percent.Text = $"{Volume.Value}%";
         if (Active == null) return;
         Active.Delay.Milliseconds = (int)Delay.Value; Active.Delay.Gain = Volume.Value / 100f; Active.Delay.Muted = Mute.Checked;
+        Active.Delay.MonoMix = MonoMix.Checked;
     }
 }
 
@@ -194,6 +238,7 @@ sealed class MonitorForm : Form
     readonly Button start = new() { Text = "Start listening", Width = 155, Height = 38, BackColor = Color.FromArgb(29, 91, 220), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
     readonly Button add = new() { Text = "+ Add output", Width = 130, Height = 34 };
     readonly System.Windows.Forms.Timer keyTimer = new() { Interval = 15 };
+    readonly TalkCuePlayer talkCues = new();
     GlobalTalkKeys? talkKeys;
     bool hookFailed, sessionLocked, assigningKey;
     readonly Button record = new() { Text = "Record", Width = 155, Height = 34 };
@@ -285,11 +330,11 @@ sealed class MonitorForm : Form
             }
             finally { closingInProgress = false; }
         };
-        FormClosed += (_, _) => { take = null; timer.Dispose(); keyTimer.Dispose(); talkKeys?.Dispose(); Microsoft.Win32.SystemEvents.SessionSwitch -= SessionChanged; };
+        FormClosed += (_, _) => { take = null; timer.Dispose(); keyTimer.Dispose(); talkKeys?.Dispose(); talkCues.Dispose(); Microsoft.Win32.SystemEvents.SessionSwitch -= SessionChanged; };
         Shown += (_, _) =>
         {
             AppSettings? saved = null; string? error = null;
-            try { saved = SettingsStore.Load(SettingsStore.PathName); }
+            try { saved = SettingsStore.LoadCurrent(); }
             catch (Exception ex) { error = "Could not restore settings: " + ex.Message; }
             RestoreSettings(saved);
             try { talkKeys = new GlobalTalkKeys(); }
@@ -394,7 +439,8 @@ sealed class MonitorForm : Form
             : "Take preserved • " + TakeSummary(session) + "\n" + session.Error.Message;
     }
     AppSettings ReadSettings() => new(input.SelectedItem as DeviceChoice, latency.SelectedIndex,
-        rows.Controls.Cast<OutputRow>().Select(r => new OutputSettings(r.Device.SelectedItem as DeviceChoice, r.Volume.Value, (int)r.Delay.Value, r.Mute.Checked, r.ReadTalk())).ToArray());
+        rows.Controls.Cast<OutputRow>().Select(r => new OutputSettings(r.Device.SelectedItem as DeviceChoice,
+            r.Volume.Value, (int)r.Delay.Value, r.Mute.Checked, r.ReadTalk(), r.MonoMix.Checked)).ToArray());
     void SaveSettings()
     {
         if (loadingSettings) return;
@@ -425,7 +471,7 @@ sealed class MonitorForm : Form
         for (int i = 0; i < actual.Outputs.Length; i++)
         {
             var a = actual.Outputs[i]; var b = saved.Outputs[i];
-            if (a.Device?.Id != b.Device?.Id || a.Volume != b.Volume || a.Delay != b.Delay || a.Muted != b.Muted)
+            if (a.Device?.Id != b.Device?.Id || a.Volume != b.Volume || a.Delay != b.Delay || a.Muted != b.Muted || a.MonoMix != b.MonoMix)
                 throw new Exception("Output settings restoration failed");
             if (a.Talk != SettingsStore.ChannelTalk(b, saved.Talk)) throw new Exception("Channel talk/keybinding restoration failed");
         }
@@ -472,16 +518,17 @@ sealed class MonitorForm : Form
     }
     void AddRow(OutputSettings? saved = null)
     {
-        var row = new OutputRow(outputs); rows.Controls.Add(row);
+        var row = new OutputRow(outputs, talkCues.Enqueue); rows.Controls.Add(row);
         if (saved != null)
         {
             SettingsStore.SelectDevice(row.Device, outputs, saved.Device);
             row.Volume.Value = Math.Clamp(saved.Volume, 0, 100);
             row.Delay.Value = Math.Clamp(saved.Delay, 0, 5000); row.Mute.Checked = saved.Muted;
+            row.MonoMix.Checked = saved.MonoMix;
             var talk = saved.Talk ?? new ChannelTalkSettings();
             row.TalkEnabled.Checked = talk.Enabled; row.TalkModeBox.SelectedIndex = Math.Clamp((int)talk.Mode, 0, 2);
             row.Binding = GlobalTalkKey.Valid((Keys)talk.Binding) ? (Keys)talk.Binding : Keys.Control | Keys.Shift | Keys.F8;
-            row.PassKey.Checked = talk.PassThrough; row.ConfigureTalk();
+            row.PassKey.Checked = talk.PassThrough; row.GateBeeps.Checked = talk.BeepOnChange; row.ConfigureTalk();
         }
         row.Remove.Click += (_, _) =>
         {
@@ -493,6 +540,7 @@ sealed class MonitorForm : Form
         row.TalkEnabled.CheckedChanged += (_, _) => TalkChanged();
         row.TalkModeBox.SelectedIndexChanged += (_, _) => TalkChanged();
         row.PassKey.CheckedChanged += (_, _) => { ConfigureChannelKeys(); SaveSettings(); };
+        row.GateBeeps.CheckedChanged += (_, _) => SaveSettings();
         row.BindKey.Click += (_, _) =>
         {
             assigningKey = true; ConfigureChannelKeys(); talkKeys?.ReleaseAll();
@@ -510,6 +558,7 @@ sealed class MonitorForm : Form
         row.Volume.ValueChanged += (_, _) => SaveSettings();
         row.Delay.ValueChanged += (_, _) => SaveSettings();
         row.Mute.CheckedChanged += (_, _) => SaveSettings();
+        row.MonoMix.CheckedChanged += (_, _) => SaveSettings();
         SaveSettings();
     }
     void OpenRoute(OutputRow row)
@@ -590,8 +639,41 @@ static class Checks
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(48000, channels);
         public int Read(float[] b, int o, int c) { for (int i = 0; i < c; i++) b[o+i] = position++ < channels ? 1 : 0; return c; }
     }
+
+    static void CheckMonoMix()
+    {
+        float[] stereo = [.75f, 0, 0, .5f, .25f, .75f];
+        var bytes = new byte[stereo.Length * sizeof(float)];
+        Buffer.BlockCopy(stereo, 0, bytes, 0, bytes.Length);
+        using var source = new RawSourceWaveStream(new MemoryStream(bytes), WaveFormat.CreateIeeeFloatWaveFormat(48000, 2));
+        var route = new DelayLine(source.ToSampleProvider()) { Gain = 1 };
+        var output = new float[stereo.Length];
+        if (route.Read(output, 0, output.Length) != output.Length || !output.SequenceEqual(stereo))
+            throw new Exception("Stereo routing must preserve separate channels with mono mix off");
+
+        source.Position = 0;
+        route.MonoMix = true;
+        if (route.Read(output, 0, output.Length) != output.Length || !output.SequenceEqual([.375f, .375f, .25f, .25f, .5f, .5f]))
+            throw new Exception("Mono mix must center left-only, right-only, and stereo frames");
+    }
+
     public static void Run()
     {
+        if (PortableLayout.SystemDirectory is { } system)
+        {
+            var localizations = Path.Combine(system, "Localizations");
+            string? resource = Directory.Exists(localizations)
+                ? Directory.EnumerateFiles(localizations, "System.Windows.Forms.resources.dll", SearchOption.AllDirectories).FirstOrDefault()
+                : null;
+            if (resource != null)
+            {
+                var culture = System.Globalization.CultureInfo.GetCultureInfo(Path.GetFileName(Path.GetDirectoryName(resource))!);
+                var loaded = typeof(Form).Assembly.GetSatelliteAssembly(culture);
+                if (!string.Equals(loaded.Location, resource, StringComparison.OrdinalIgnoreCase))
+                    throw new Exception("WinForms localizations must load from System/Localizations");
+            }
+        }
+        CheckMonoMix();
         int checks = 0;
         foreach (int channels in new[] { 1, 2 }) foreach (int ms in new[] { 0, 1, 125, 5000 })
         {
@@ -605,8 +687,12 @@ static class Checks
         try
         {
             if (SettingsStore.Load(path) != null) throw new Exception("First-launch settings test failed");
+            var oldTalk = JsonSerializer.Deserialize<ChannelTalkSettings>("""{"Enabled":true,"Mode":1}""");
+            if (oldTalk?.BeepOnChange != false) throw new Exception("Older channel settings must keep talk cues off");
             var saved = new AppSettings(new DeviceChoice("test-microphone", "My mic"), 2,
-                [new(new DeviceChoice("test-headphones", "Headphones"), 37, 125, true), new(new DeviceChoice("test-speakers", "Speakers"), 81, 2300)],
+                [new(new DeviceChoice("test-headphones", "Headphones"), 37, 125, true,
+                    new ChannelTalkSettings(true, TalkMode.Toggle, BeepOnChange: true), MonoMix: true),
+                 new(new DeviceChoice("test-speakers", "Speakers"), 81, 2300)],
                 new TalkSettings(TalkMode.PushToTalk, (int)(Keys.Control | Keys.F9), false, true, true));
             SettingsStore.Save(path, saved);
             var restored = SettingsStore.Load(path) ?? throw new Exception("Saved settings missing");
@@ -689,6 +775,6 @@ static class Checks
         if (gatedAudio.Any(x => x != 0)) throw new Exception("Closed gate leaked audio");
         if (GlobalTalkKey.Valid(Keys.ControlKey) || GlobalTalkKey.Valid(Keys.LWin) || GlobalTalkKey.Valid(Keys.F12) || !GlobalTalkKey.Valid(Keys.Control | Keys.Shift | Keys.F8)) throw new Exception("Talk key validation failed");
         ChannelKeyChecks.Run();
-        File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "self-test.txt"), $"PASS: {checks} mono/stereo impulse delay/gain cases; mute; legacy and per-channel settings restoration; in-memory recording and WAV export; memory limit and export retry; independent toggle/PTT gates, shared chords, key-repeat handling, passthrough/suppression, reconfiguration and missing-release handling.\nUses existing playback endpoints and third-party virtual cables.\n");
+        File.WriteAllText(Path.Combine(PortableLayout.DataDirectory, "self-test.txt"), $"PASS: {checks} mono/stereo impulse delay/gain cases; mute and optional mono mix; legacy and per-channel settings restoration; in-memory recording and WAV export; memory limit and export retry; independent toggle/PTT gates, shared chords, key-repeat handling, passthrough/suppression, reconfiguration, missing-release handling, and opt-in talk cue transitions.\nUses existing playback endpoints and third-party virtual cables.\n");
     }
 }

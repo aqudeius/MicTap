@@ -19,6 +19,10 @@ MicTap is a small Windows microphone monitor and audio splitter. Choose one inpu
 
 MicTap uses existing Windows audio endpoints. It does not install or expose its own virtual microphone driver.
 
+## Run the portable Windows build
+
+Extract the ZIP into a fresh writable folder and open `MicTap.exe`. Keep the `System` folder beside it. The portable build includes the .NET Desktop Runtime. To bring over settings from a previous build, copy its `settings.json` into the new `System` folder.
+
 ## Build and run
 
 From the repository root on Windows:
@@ -30,6 +34,14 @@ dotnet run --project src/MicTap/MicTap.csproj -c Release --no-build
 ```
 
 You can also open `MicTap.sln` in Visual Studio with the .NET desktop development workload installed.
+
+To publish the portable Windows x64 layout:
+
+```powershell
+dotnet publish src/MicTap/MicTap.csproj -c Release -r win-x64 --self-contained true -o artifacts/MicTap-win-x64
+```
+
+The published folder contains `MicTap.exe`, `README.md`, and `System`. `System/DLLs` contains the application and its runtime, `System/Localizations` contains language resources, and `System/Notices` contains license notices.
 
 To publish a folder that uses the installed .NET Desktop Runtime:
 
@@ -47,6 +59,8 @@ Keep the published files and license notices together. `artifacts/`, `bin/`, and
 4. Press **Start listening**. Stop listening or close MicTap to release the input.
 
 Use headphones to avoid acoustic feedback. Zero added delay still includes Windows and device latency. If audio crackles, try a larger buffer.
+
+If the mic comes through only one ear, enable **Mono mix** on the headphone output. This sends the same mix to both sides and saves the setting for that output. For example, some audio interfaces put a single mic on one side of a stereo input.
 
 For a virtual microphone feed, choose the cable's **playback endpoint** as a MicTap output. In the receiving app, choose the same cable's **recording endpoint** as its input. A typical setup is:
 
@@ -71,6 +85,8 @@ Enable **Talk control** on an output, then choose its mode:
 
 Leave **Talk control** off for outputs that should remain continuously audible. **Mute** overrides the talk mode.
 
+Enable **On/off beeps** on a Toggle or Push to talk output to hear a quiet double beep when its talk gate opens or closes. The opening cue is slightly higher in pitch. The setting starts off and is saved per output. Cues play through the Windows default playback device. Set that device to your headphones if you route microphone audio to a virtual cable.
+
 Click the key button to assign a keyboard key with optional Ctrl, Shift, or Alt. The default is Ctrl+Shift+F8. Escape cancels assignment; F12 and Windows keys are reserved. Keys control active routes and do not start audio capture.
 
 Bindings work while another normal desktop app is active or MicTap is minimized. **Pass key to other apps** controls whether the foreground app also receives the trigger key; it does not enable or disable background handling. When pass-through is off, the trigger key's down/up events are consumed, while modifier keys can still reach the foreground app.
@@ -89,7 +105,7 @@ Only one take is retained at a time, up to 512 MB of audio in memory. At the lim
 
 ## Settings and local data
 
-MicTap writes `settings.json` beside its executable. That folder must be writable. Device selections, output settings, and channel bindings are restored on the next launch; audio capture does not start automatically.
+Portable builds save settings in `System/settings.json`. Development builds save settings beside the executable. MicTap restores your devices, output settings, and bindings on launch. Capture starts when you click **Start listening** or **Record**.
 
 The ignore file excludes local settings, WAV recordings, build output, logs, and signing keys. Audio stays on the computer and is written to a recording file only when you export it.
 
