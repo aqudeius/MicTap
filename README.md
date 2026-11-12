@@ -1,13 +1,13 @@
 # MicTap
 
-MicTap is a small Windows microphone monitor and audio splitter. Choose one input, send it to multiple playback devices or installed virtual audio cables, and control each output independently.
+MicTap is a small Windows microphone monitor and audio splitter. Give each input its own group of playback devices or installed virtual audio cables, then control each output independently.
 
 ## Features
 
 - Independent output volume, mute, and added delay from 0 to 5 seconds.
 - Optional open, toggle, or push-to-talk mode on each output.
 - Assignable global keyboard bindings with configurable key pass-through.
-- Saved input, outputs, volume, delay, and talk settings.
+- Multiple input groups with their own buffers, Start/Stop controls, and saved output settings.
 - Temporary recordings kept in memory, with optional WAV export.
 
 ## Requirements
@@ -58,6 +58,8 @@ Keep the published files and license notices together. `artifacts/`, `bin/`, and
 3. Use **Add output** to create more routes.
 4. Press **Start listening**. Stop listening or close MicTap to release the input.
 
+Click **Add input** to create another tab with one output. Select its input device, then use **Add output** inside that tab to expand its routes. Start or stop each group from its tab. Switching tabs leaves active groups running. **Remove input** stops and removes the selected group.
+
 Use headphones to avoid acoustic feedback. Zero added delay still includes Windows and device latency. If audio crackles, try a larger buffer.
 
 If the mic comes through only one ear, enable **Mono mix** on the headphone output. This sends the same mix to both sides and saves the setting for that output. For example, some audio interfaces put a single mic on one side of a stereo input.
@@ -71,7 +73,7 @@ Microphone -> MicTap -> headphones, continuously open
 
 If MicTap's input is already a virtual cable, use a different cable for its outgoing feed. Reading and feeding the same cable can create a loop. MicTap gates only its own output stream; other applications feeding that cable bypass MicTap's controls.
 
-Stop audio before changing the input, an existing output device, or the buffer size. Use **Refresh devices** after reconnecting hardware. A saved device that is unavailable remains selected and is marked disconnected.
+Stop a group before changing its input, an existing output device, or its buffer size. Use **Refresh devices** after reconnecting hardware. A saved device that is unavailable remains selected and is marked disconnected.
 
 ## Per-output talk controls
 
@@ -97,7 +99,7 @@ Toggle and push-to-talk gates reset closed when audio restarts, their mode or bi
 
 ## Record and export
 
-Click **Record** to begin a temporary take without choosing a file. Click **Stop recording** to keep it in MicTap, then choose **Save / export** for a WAV file or **Discard take** to release it.
+Select an input tab and click **Record** to begin a temporary take. The take follows that input until you stop recording, even if you switch tabs. Click **Stop recording** to keep it in MicTap, then choose **Save / export** for a WAV file or **Discard take** to release it.
 
 Recording works with or without live listening. It captures the original input before output volume, mute, delay, and talk gates. Muting an output does not mute the recording.
 
@@ -105,7 +107,7 @@ Only one take is retained at a time, up to 512 MB of audio in memory. At the lim
 
 ## Settings and local data
 
-Portable builds save settings in `System/settings.json`. Development builds save settings beside the executable. MicTap restores your devices, output settings, and bindings on launch. Capture starts when you click **Start listening** or **Record**.
+Portable builds save settings in `System/settings.json`. Development builds save settings beside the executable. MicTap restores each input group and its outputs on launch. A saved setup from an earlier single-input version becomes the first input group. Capture starts when you click **Start listening** or **Record**.
 
 The ignore file excludes local settings, WAV recordings, build output, logs, and signing keys. Audio stays on the computer and is written to a recording file only when you export it.
 
@@ -118,7 +120,7 @@ dotnet src/MicTap/bin/Release/net8.0-windows/MicTap.dll --self-test
 Get-Content src/MicTap/bin/Release/net8.0-windows/self-test.txt
 ```
 
-The checks cover delay timing, gain and mute, settings migration, in-memory recording and WAV export, independent and shared bindings, repeat suppression, key pass-through, and missing key releases. They do not activate audio capture.
+The checks cover delay timing, gain and mute, input group isolation, settings migration, in-memory recording and WAV export, independent and shared bindings, repeat suppression, key pass-through, and missing key releases. They use synthetic audio.
 
 Background key delivery has also been checked with an isolated native test window. Hardware latency, protected applications, and long-running multi-device routing still need testing on the intended setup.
 

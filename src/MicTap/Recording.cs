@@ -10,8 +10,9 @@ sealed class Recording
     readonly WaveFormat format;
     readonly long maxBytes;
     long written;
+    volatile Exception? error;
     public DateTime StartedAt { get; } = DateTime.Now;
-    public Exception? Error { get; private set; }
+    public Exception? Error => error;
     public bool IsComplete { get; private set; }
     public bool Exported { get; private set; }
     public long Bytes => Interlocked.Read(ref written);
@@ -26,7 +27,7 @@ sealed class Recording
         if (IsComplete || Error != null || count == 0) return;
         if (written + count > maxBytes)
         {
-            Error = new IOException("The temporary recording reached its memory limit (512 MB). Export or discard this take before recording another.");
+            error = new IOException("The temporary recording reached its memory limit (512 MB). Export or discard this take before recording another.");
             return;
         }
         var block = new byte[count]; Buffer.BlockCopy(bytes, 0, block, 0, count);
